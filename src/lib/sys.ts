@@ -163,3 +163,19 @@ export const osName = (
   }
   return /^PRETTY_NAME="?([^"\n]+)/m.exec(detail)?.[1] ?? "Linux";
 };
+
+/** Proxy ARP (cloud VMs, some ISP and VPN gear) answers for every address with
+ *  one MAC: those entries prove nothing. Keeps the gateway's own entry. */
+export const dropProxyArp = (
+  neigh: Map<string, string>,
+  gateway: string,
+  max = 4,
+): Map<string, string> => {
+  const count = new Map<string, number>();
+  for (const mac of neigh.values()) count.set(mac, (count.get(mac) ?? 0) + 1);
+  return new Map(
+    [...neigh].filter(([ip, mac]) =>
+      ip === gateway || (count.get(mac) ?? 0) <= max
+    ),
+  );
+};

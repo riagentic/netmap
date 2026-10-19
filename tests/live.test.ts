@@ -36,6 +36,7 @@ Deno.test({
     for (const d of ds) {
       console.log(d.ip, d.mac, d.vendor, d.ttl, d.names.join("/"), d.os);
     }
+    assert(ds.length < 64, `${ds.length} devices: proxy ARP leaking through?`);
     const me = ds.find((d) => d.self);
     assert(me, "this machine missing");
     assertMatch(

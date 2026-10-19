@@ -1,6 +1,7 @@
 import { assertEquals } from "@std/assert";
 import {
   cymruAsn,
+  dropProxyArp,
   normMac,
   osName,
   parseArp,
@@ -176,4 +177,17 @@ Deno.test("ASN via Cymru TXT; reverse names; OS names", () => {
     osName("linux", "6.8.0", 'NAME="Ubuntu"\nPRETTY_NAME="Ubuntu 24.04 LTS"\n'),
     "Ubuntu 24.04 LTS",
   );
+});
+
+Deno.test("proxy ARP: one MAC on many addresses is dropped, gateway kept", () => {
+  const fake = "12:34:56:78:9a:bc";
+  const neigh = new Map([
+    ["10.1.0.1", fake],
+    ...Array.from({ length: 9 }, (_, i) => [`10.1.0.${i + 10}`, fake]),
+    ["10.1.0.50", "3c:a6:2f:00:00:01"],
+  ] as [string, string][]);
+  assertEquals([...dropProxyArp(neigh, "10.1.0.1").keys()], [
+    "10.1.0.1",
+    "10.1.0.50",
+  ]);
 });

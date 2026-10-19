@@ -22,6 +22,7 @@ import {
 } from "./lib/parse.ts";
 import {
   cymruAsn,
+  dropProxyArp,
   normMac,
   type Os,
   osName,
@@ -508,7 +509,7 @@ export const discover = async (
     }, signal),
     loadOui(),
   ]);
-  const neigh = await neighbours();
+  const neigh = dropProxyArp(await neighbours(), l.gateway);
   const size = 2 ** (32 - lan.cidr);
   const broadcast = intToIp(
     Math.floor(ipToInt(lan.ip) / size) * size + size - 1,
