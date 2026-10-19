@@ -1,5 +1,5 @@
 // Pure parsers for tool output and wire formats — no I/O, fully testable.
-import type { Hop, Service, Upnp } from "./types.ts";
+import type { Hop, Upnp } from "./types.ts";
 
 export const ipToInt = (ip: string): number =>
   ip.split(".").reduce((a, o) => a * 256 + Number(o), 0);
@@ -33,7 +33,7 @@ export const zoneOf = (ip: string): Hop["zone"] => {
   return "public";
 };
 
-/** `mtr -j -z -b` report → hops. `-b` writes "name (ip)" or a bare ip. */
+/** `mtr -j -z` report → hops; tolerates "name (ip)" hosts from `-b`. */
 export const parseMtr = (json: string): Hop[] => {
   type Hub = Record<string, number | string>;
   const hubs = (JSON.parse(json).report?.hubs ?? []) as Hub[];
@@ -54,48 +54,6 @@ export const parseMtr = (json: string): Hop[] => {
       zone: ip ? zoneOf(ip) : "unknown",
     };
   });
-};
-
-/** avahi writes non-ASCII as decimal byte escapes: `dev\226\128\153s\032Mac`. */
-export const unescapeAvahi = (s: string): string => {
-  const bytes: number[] = [];
-  for (let i = 0; i < s.length; i++) {
-    const m = /^\\(\d{3})/.exec(s.slice(i));
-    if (m) (bytes.push(Number(m[1])), i += 3);
-    else bytes.push(...new TextEncoder().encode(s[i]));
-  }
-  return new TextDecoder().decode(new Uint8Array(bytes));
-};
-
-export type MdnsHost = { names: string[]; services: Service[] };
-
-/** `avahi-browse -aptr` resolved lines (`=;if;IPv4;name;type;domain;host;ip;port;txt`). */
-export const parseAvahi = (text: string): Map<string, MdnsHost> => {
-  const out = new Map<string, MdnsHost>();
-  for (const line of text.split("\n")) {
-    const f = line.split(";");
-    if (f[0] !== "=" || f[2] !== "IPv4" || f.length < 10) continue;
-    const ip = f[7];
-    const h = out.get(ip) ?? { names: [], services: [] };
-    const name = unescapeAvahi(f[3]);
-    const host = f[6].replace(/\.local$/, "");
-    for (const n of [host, name]) {
-      if (n && !h.names.includes(n)) h.names.push(n);
-    }
-    const txt = [...f.slice(9).join(";").matchAll(/"([^"]*)"/g)].map((x) =>
-      unescapeAvahi(x[1])
-    );
-    if (!h.services.some((s) => s.type === f[4] && s.port === Number(f[8]))) {
-      h.services.push({
-        type: unescapeAvahi(f[4]),
-        name,
-        port: Number(f[8]),
-        txt,
-      });
-    }
-    out.set(ip, h);
-  }
-  return out;
 };
 
 /** First header value in an HTTP-style message (SSDP replies, HTTP heads). */
@@ -121,18 +79,6 @@ export const parseUpnp = (
     "",
   ),
 });
-
-/** `ping -c1` → ttl + rtt, or null when no reply. */
-export const parsePing = (
-  text: string,
-): { ttl: number; rtt: number } | null => {
-  const m = /ttl=(\d+) time=([\d.]+)/.exec(text);
-  return m ? { ttl: Number(m[1]), rtt: Number(m[2]) } : null;
-};
-
-/** `nmblookup -A` → the unique <00> workstation name. */
-export const parseNmb = (text: string): string =>
-  /^\s+(\S+)\s+<00>\s+-\s+[^<]*<ACTIVE>/m.exec(text)?.[1] ?? "";
 
 /** `curl -skvL -D -` → final status, Server, <title>, TLS subject. */
 export const parseCurl = (out: string, err: string) => ({

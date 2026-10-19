@@ -27,16 +27,16 @@ export function About(): JSX.Element {
             "private address" (phones, laptops).
           </li>
           <li>
-            <b>mDNS / Bonjour</b>{" "}
-            (avahi): names, services, model strings (printers, Apple, Android,
-            Chromecast…).
+            <b>mDNS / Bonjour</b>: names, services, model strings (printers,
+            Apple, Android, Chromecast…), asked of each host directly, so it
+            works beside VPNs.
           </li>
           <li>
             <b>SSDP / UPnP</b>: friendly name, maker, model (TVs, media boxes,
             routers).
           </li>
           <li>
-            <b>NetBIOS</b> names and <b>reverse DNS</b>.
+            <b>NetBIOS</b> names (Windows, Samba) and <b>reverse DNS</b>.
           </li>
           <li>
             <b>TCP connect scan</b>{" "}
@@ -45,9 +45,9 @@ export function About(): JSX.Element {
             <b>TLS certificate</b> subjects.
           </li>
           <li>
-            <b>Route</b>: <code>mtr</code>{" "}
-            with per-hop ASN, latency, jitter, loss; reverse DNS per hop; VPN
-            egress detection.
+            <b>Route</b>: <code>mtr</code>, <code>traceroute</code> or{" "}
+            <code>tracert</code>, with per-hop latency, jitter, loss, ASN and
+            reverse DNS; VPN egress detection.
           </li>
           <li>
             Every signal votes; each device shows its <b>evidence</b>{" "}
@@ -73,11 +73,11 @@ export function About(): JSX.Element {
           <li>
             Outside requests: <code>ipinfo.io</code> (public IP, provider),{" "}
             <code>standards-oui.ieee.org</code>{" "}
-            (vendor list, monthly), the trace target, and DNS for hop names.
+            (vendor list, monthly), the trace target, and DNS for hop names and
+            ASNs (<code>asn.cymru.com</code>).
           </li>
           <li>
-            No root needed: <code>ping</code> and <code>mtr</code>{" "}
-            use their own capabilities.
+            No root or admin rights needed on Linux, macOS or Windows.
           </li>
         </ul>
         <h3>⚠️ Limits</h3>
@@ -93,8 +93,9 @@ export function About(): JSX.Element {
           <li>Only scan networks you own or may test.</li>
         </ul>
         <p class="muted">
-          Built with aio (Deno + Electron). Tools used when present: ping, mtr,
-          ip, avahi-browse, nmblookup, curl, dig, getent.
+          Built with aio (Deno + Electron). Uses each OS's own tools: ping, arp,
+          curl, traceroute / tracert (mtr when present), ip (Linux), netstat and
+          scutil (macOS), PowerShell (Windows).
         </p>
       </div>
     </section>

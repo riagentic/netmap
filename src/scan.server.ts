@@ -1,6 +1,7 @@
 // Server-only: every probe that touches the OS or the network.
-// No root needed — ping/mtr ship with cap_net_raw; the rest is TCP connect,
-// mDNS (avahi), SSDP (UDP multicast), NetBIOS (nmblookup), HTTP (curl).
+// Linux, macOS and Windows, no root/admin: TCP connect, ping, ARP table,
+// mDNS + SSDP + NetBIOS over our own UDP sockets, DNS via Deno, HTTP via curl,
+// path via mtr / traceroute / tracert. Each OS uses only what it ships with.
 import dgram from "node:dgram";
 import { join } from "@std/path";
 import { appDirs } from "aio/server";
@@ -8,21 +9,53 @@ import {
   header,
   hostsOf,
   inSubnet,
+  intToIp,
+  ipToInt,
   isRandomMac,
-  parseAvahi,
   parseCurl,
   parseMtr,
   parseNeigh,
-  parseNmb,
   parseOuiCsv,
-  parsePing,
   parseServices,
   parseUpnp,
   vendorOf,
 } from "./lib/parse.ts";
+import {
+  cymruAsn,
+  normMac,
+  type Os,
+  osName,
+  parseArp,
+  parseNetstat,
+  parsePing,
+  parseRouteGet,
+  parseScutil,
+  parseTraceroute,
+  parseTracert,
+  parseWinNet,
+  pingArgs,
+  reversed,
+  VIRTUAL,
+  WIN_NET_PS,
+} from "./lib/sys.ts";
+import {
+  COMMON_TYPES,
+  dnsQuery,
+  dnsRecords,
+  mdnsFollowUps,
+  type MdnsHost,
+  mdnsHosts,
+  META,
+  nbstatName,
+  nbstatQuery,
+  PTR,
+  type Rec,
+} from "./lib/wire.ts";
 import { httpScheme, serviceName } from "./lib/ports.ts";
 import { identify } from "./lib/classify.ts";
 import type { Device, Hop, Iface, Local, Port, Upnp } from "./lib/types.ts";
+
+const OS = Deno.build.os as Os;
 
 /** Run a tool; return what it printed by the deadline (partial on timeout, "" if absent). */
 export const run = async (
@@ -116,114 +149,315 @@ export const loadOui = async (): Promise<Map<string, string>> => {
 
 let etcCache: Map<number, string> | null = null;
 const etcServices = async () =>
-  etcCache ??= parseServices(await read("/etc/services"));
+  etcCache ??= parseServices(
+    await read(
+      OS === "windows"
+        ? `${
+          Deno.env.get("SystemRoot") ?? "C:\\Windows"
+        }\\System32\\drivers\\etc\\services`
+        : "/etc/services",
+    ),
+  );
 
 // ── this machine ─────────────────────────────────────────────────────────
 
-const VIRTUAL =
-  /^(lo|docker|br-|veth|virbr|vnet|tun|tap|wg|nordlynx|tailscale|zt)/;
+/** Default gateway, the LAN interface (name or ip), the internet egress, DNS. */
+type Routes = { gw: string; lan: string; egress: string; dns: string[] };
 
-export const local = async (): Promise<Local> => {
-  const ifaces: Iface[] = Deno.networkInterfaces()
-    .filter((i) => i.family === "IPv4" && i.name !== "lo")
-    .map((i) => ({
-      name: i.name,
-      ip: i.address,
-      cidr: Number(i.cidr.split("/")[1]),
-      mac: i.mac,
-    }));
-  const [route, egress, dns, info] = await Promise.all([
+const linuxRoutes = async (): Promise<Routes> => {
+  const [route, egress, dns] = await Promise.all([
     run("ip", ["-j", "route", "show", "default"], 2000),
     run("ip", ["-j", "route", "get", "1.1.1.1"], 2000),
     run("resolvectl", ["dns"], 2000),
-    fetch("https://ipinfo.io/json", { signal: AbortSignal.timeout(4000) }).then(
-      (r) => r.json(),
-    ).catch(() => ({})),
   ]);
   const def =
     (JSON.parse(route.out || "[]") as { gateway?: string; dev: string }[]).sort(
       (a, b) => Number(VIRTUAL.test(a.dev)) - Number(VIRTUAL.test(b.dev)),
     )[0];
-  const lan = ifaces.find((i) => i.name === def?.dev) ??
-    ifaces.find((i) => !VIRTUAL.test(i.name)) ?? null;
-  const servers = [...dns.out.matchAll(/\b(\d+\.\d+\.\d+\.\d+)\b/g)].map((m) =>
-    m[1]
-  );
-  const resolv = [
+  const resolved = [...dns.out.matchAll(/\b(\d+\.\d+\.\d+\.\d+)\b/g)].map((
+    m,
+  ) => m[1]);
+  const conf = [
     ...(await read("/etc/resolv.conf")).matchAll(/^nameserver\s+(\S+)/gm),
   ].map((m) => m[1]);
+  return {
+    gw: def?.gateway ?? "",
+    lan: def?.dev ?? "",
+    egress: (JSON.parse(egress.out || "[{}]")[0]?.dev as string) ?? "",
+    dns: resolved.length ? resolved : conf,
+  };
+};
+
+const macRoutes = async (): Promise<Routes> => {
+  const [table, egress, dns] = await Promise.all([
+    run("netstat", ["-rn", "-f", "inet"], 3000),
+    run("route", ["-n", "get", "1.1.1.1"], 2000),
+    run("scutil", ["--dns"], 2000),
+  ]);
+  const defs = parseNetstat(table.out);
+  const def = defs.find((d) => !VIRTUAL.test(d.dev)) ?? defs[0];
+  return {
+    gw: def?.gw ?? "",
+    lan: def?.dev ?? "",
+    egress: parseRouteGet(egress.out),
+    dns: parseScutil(dns.out),
+  };
+};
+
+const winRoutes = async (): Promise<Routes> => {
+  const w = parseWinNet(
+    (await run(
+      "powershell",
+      ["-NoProfile", "-NonInteractive", "-Command", WIN_NET_PS],
+      15_000,
+    )).out,
+  );
+  const def = w.routes.find((r) => !VIRTUAL.test(r.name)) ?? w.routes[0];
+  return {
+    gw: def?.gw ?? "",
+    lan: def?.ip ?? "",
+    egress: w.egress,
+    dns: w.dns,
+  };
+};
+
+export const local = async (): Promise<Local> => {
+  const ifaces: Iface[] = Deno.networkInterfaces()
+    .filter((i) =>
+      i.family === "IPv4" && !i.address.startsWith("127.") &&
+      !i.address.startsWith("169.254.")
+    )
+    .map((i) => ({
+      name: i.name,
+      ip: i.address,
+      cidr: Number(i.cidr.split("/")[1]),
+      mac: normMac(i.mac),
+    }));
+  const [r, info] = await Promise.all([
+    OS === "windows"
+      ? winRoutes()
+      : OS === "darwin"
+      ? macRoutes()
+      : linuxRoutes(),
+    fetch("https://ipinfo.io/json", { signal: AbortSignal.timeout(4000) }).then(
+      (r) => r.json(),
+    ).catch(() => ({})),
+  ]);
+  // Windows reports interfaces by alias or by ip depending on the source: match both.
+  const find = (k: string) =>
+    k ? ifaces.find((i) => i.name === k || i.ip === k) : undefined;
+  const lan = find(r.lan) ?? ifaces.find((i) => !VIRTUAL.test(i.name)) ?? null;
   return {
     hostname: Deno.hostname(),
     ifaces,
     lan,
-    gateway: def?.gateway ?? "",
-    egress: (JSON.parse(egress.out || "[{}]")[0]?.dev as string) ?? "",
-    dns: [...new Set(servers.length ? servers : resolv)],
+    gateway: r.gw,
+    egress: find(r.egress)?.name ?? r.egress,
+    dns: [...new Set(r.dns)],
     publicIp: info.ip ?? "",
     isp: info.org ?? "",
     location: [info.city, info.region, info.country].filter(Boolean).join(", "),
   };
 };
 
+/** Reverse DNS through the system resolver; "" when there is no PTR. */
+const ptr = (ip: string): Promise<string> =>
+  Deno.resolveDns(reversed(ip, "in-addr.arpa"), "PTR", {
+    signal: AbortSignal.timeout(2500),
+  }).then((n) => n[0]?.replace(/\.$/, "") ?? "").catch(() => "");
+
+/** Origin AS of a public ip (Team Cymru DNS; works with any resolver). */
+const asnOf = (ip: string): Promise<string> =>
+  Deno.resolveDns(reversed(ip, "origin.asn.cymru.com"), "TXT", {
+    signal: AbortSignal.timeout(2500),
+  }).then((t) => cymruAsn(t[0]?.join("") ?? "")).catch(() => "");
+
 // ── path to the internet ─────────────────────────────────────────────────
 
-const rdns = async (ip: string): Promise<string> =>
-  (await run("dig", ["+short", "+time=1", "+tries=1", "-x", ip], 3000)).out
-    .trim().split("\n")[0].replace(/\.$/, "");
-
-export const trace = async (
-  target: string,
-  signal?: AbortSignal,
-): Promise<Hop[]> => {
-  const { out } = await run(
+/** mtr where it runs unprivileged (Linux); traceroute / tracert otherwise. */
+const hopsTo = async (target: string, signal?: AbortSignal): Promise<Hop[]> => {
+  if (OS === "windows") {
+    return parseTracert(
+      (await run(
+        "tracert",
+        ["-d", "-h", "20", "-w", "1000", target],
+        70_000,
+        signal,
+      )).out,
+    );
+  }
+  const mtr = await run(
     "mtr",
     ["-j", "-n", "-z", "-c", "3", target],
     45_000,
     signal,
   );
-  if (!out) return [];
-  const hops = parseMtr(out);
-  const names = await Promise.all(
-    hops.map((h) => (h.ip ? rdns(h.ip) : Promise.resolve(""))),
+  const fromMtr = mtr.out.trim().startsWith("{") ? parseMtr(mtr.out) : [];
+  if (fromMtr.length || signal?.aborted) return fromMtr;
+  return parseTraceroute(
+    (await run(
+      "traceroute",
+      ["-n", "-q", "3", "-w", "1", "-m", "20", target],
+      60_000,
+      signal,
+    )).out,
   );
-  return hops.map((h, i) => ({ ...h, host: h.host || names[i] }));
+};
+
+export const trace = async (
+  target: string,
+  signal?: AbortSignal,
+): Promise<Hop[]> => {
+  const hops = await hopsTo(target, signal);
+  const extra = await Promise.all(hops.map(async (h) => ({
+    host: h.host || (h.ip ? await ptr(h.ip) : ""),
+    asn: h.asn || (h.zone === "public" ? await asnOf(h.ip) : ""),
+  })));
+  return hops.map((h, i) => ({ ...h, ...extra[i] }));
 };
 
 // ── discovery ────────────────────────────────────────────────────────────
 
 const ping = async (ip: string, signal?: AbortSignal) =>
-  parsePing(
-    (await run("ping", ["-n", "-c", "1", "-W", "1", ip], 2500, signal)).out,
-  );
+  parsePing((await run("ping", pingArgs(OS, ip), 2500, signal)).out);
 
-/** SSDP M-SEARCH → ip → UPnP description (best effort; firewalls often drop replies). */
-export const ssdp = (
-  bindIp: string,
-  ms = 3000,
-): Promise<Map<string, { location: string; server: string }>> =>
+/** ARP/neighbour table: ip → mac, from whatever this OS offers. */
+const neighbours = async (): Promise<Map<string, string>> => {
+  if (OS === "linux") {
+    const n = parseNeigh((await run("ip", ["-j", "neigh"], 2000)).out || "[]");
+    if (n.size) return n;
+  }
+  return parseArp(
+    (await run("arp", OS === "windows" ? ["-a"] : ["-an"], 3000)).out,
+  );
+};
+
+type Send = (b: Uint8Array, port: number, ip: string) => void;
+
+/** One unbound UDP socket for `ms`, then `result()`. Unbound and without
+ *  IP_MULTICAST_IF on purpose: in Deno's node:dgram either one makes multicast
+ *  sends fail, and unicast replies reach an unbound socket from any interface. */
+const udp = <T>(
+  ms: number,
+  start: (send: Send) => void,
+  onMsg: (b: Uint8Array, from: string, send: Send) => void,
+  result: () => T,
+): Promise<T> =>
   new Promise((done) => {
-    const found = new Map<string, { location: string; server: string }>();
     const sock = dgram.createSocket({ type: "udp4", reuseAddr: true });
-    const msg =
-      'M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: "ssdp:discover"\r\nMX: 2\r\nST: ssdp:all\r\n\r\n';
-    sock.on("message", (b, r) => {
-      const t = b.toString();
-      if (!found.has(r.address) && header(t, "location")) {
-        found.set(r.address, {
-          location: header(t, "location"),
-          server: header(t, "server"),
-        });
-      }
-    });
-    sock.on("error", () => {});
-    sock.bind(0, bindIp, () => {
+    const send: Send = (b, port, ip) => {
       try {
-        sock.setMulticastInterface(bindIp);
-      } catch { /* default route interface */ }
-      for (let k = 0; k < 2; k++) sock.send(msg, 1900, "239.255.255.250");
-    });
-    setTimeout(() => (sock.close(), done(found)), ms);
+        sock.send(b, port, ip, () => {/* unreachable hosts are expected */});
+      } catch { /* closed */ }
+    };
+    sock.on("message", (b, r) => onMsg(new Uint8Array(b), r.address, send));
+    sock.on("error", () => {});
+    sock.bind(0, () => start(send));
+    setTimeout(() => {
+      try {
+        sock.close();
+      } catch { /* closed */ }
+      done(result());
+    }, ms);
   });
+
+/** Send to every target in small bursts so the socket buffer never overflows. */
+const sweep = async (targets: string[], each: (ip: string) => void) => {
+  for (let i = 0; i < targets.length; i += 32) {
+    targets.slice(i, i + 32).forEach(each);
+    await new Promise((r) => setTimeout(r, 10));
+  }
+};
+
+/** SSDP M-SEARCH, multicast plus unicast to each live host (UPnP 1.1):
+ *  ip → description URL. Unicast still works when a VPN owns the multicast route. */
+export const ssdp = (
+  targets: string[],
+  ms = 3500,
+): Promise<Map<string, { location: string; server: string }>> => {
+  const found = new Map<string, { location: string; server: string }>();
+  const search = (host: string, st: string, mx: boolean) =>
+    new TextEncoder().encode(
+      `M-SEARCH * HTTP/1.1\r\nHOST: ${host}:1900\r\nMAN: "ssdp:discover"\r\n${
+        mx ? "MX: 2\r\n" : ""
+      }ST: ${st}\r\n\r\n`,
+    );
+  return udp(ms, (send) => {
+    for (let k = 0; k < 2; k++) {
+      send(
+        search("239.255.255.250", "ssdp:all", true),
+        1900,
+        "239.255.255.250",
+      );
+    }
+    void sweep(
+      targets,
+      (ip) => send(search(ip, "upnp:rootdevice", false), 1900, ip),
+    );
+  }, (b, from) => {
+    const t = new TextDecoder().decode(b);
+    if (!found.has(from) && header(t, "location")) {
+      found.set(from, {
+        location: header(t, "location"),
+        server: header(t, "server"),
+      });
+    }
+  }, () => found);
+};
+
+/** mDNS / DNS-SD browse, multicast plus unicast queries to each live host
+ *  (RFC 6762 §5.5: responders answer those). Follow-ups go to whoever answered.
+ *  Runs from an ephemeral port, so it never fights avahi / mDNSResponder. */
+export const mdns = (targets: string[], ms = 4000) => {
+  const MCAST = "224.0.0.251";
+  const recs = new Map<string, Rec[]>();
+  const asked = new Map<string, Set<string>>();
+  const pending = new Map<string, ReturnType<typeof setTimeout>>();
+  const first: [string, number][] = [META, ...COMMON_TYPES].map((
+    t,
+  ) => [t, PTR]);
+  // One question per packet: many responders ignore multi-question queries.
+  const ask = (send: Send, ip: string, qs: [string, number][]) =>
+    qs.forEach((q) => send(dnsQuery([q]), 5353, ip));
+  return udp(ms, (send) => {
+    ask(send, MCAST, first);
+    setTimeout(() => ask(send, MCAST, first), 1000);
+    void sweep(targets, (ip) => ask(send, ip, first));
+  }, (b, from, send) => {
+    const mine = recs.get(from) ?? [];
+    mine.push(...dnsRecords(b));
+    recs.set(from, mine);
+    if (pending.has(from)) return;
+    pending.set(
+      from,
+      setTimeout(() => {
+        pending.delete(from);
+        const a = asked.get(from) ??
+          new Set(first.map(([n, t]) => `${t} ${n}`));
+        asked.set(from, a);
+        ask(send, from, mdnsFollowUps(mine, a));
+      }, 60),
+    );
+  }, () => {
+    pending.forEach(clearTimeout);
+    const out = new Map<string, MdnsHost>();
+    for (const [from, r] of recs) {
+      for (const [ip, h] of mdnsHosts(r, from)) {
+        const o = out.get(ip);
+        out.set(
+          ip,
+          o
+            ? {
+              names: [...new Set([...o.names, ...h.names])],
+              services: [...o.services, ...h.services],
+            }
+            : h,
+        );
+      }
+    }
+    return out;
+  });
+};
 
 const upnpOf = async (location: string, server: string): Promise<Upnp> => {
   const xml = await fetch(location, { signal: AbortSignal.timeout(3000) }).then(
@@ -266,28 +500,33 @@ export const discover = async (
   if (!lan) return [];
   const targets = hostsOf(lan.ip, lan.cidr);
   let done = 0;
-  const [pings, mdns, upnp, oui] = await Promise.all([
-    pool(targets, 128, async (ip) => {
+  const [pings, oui] = await Promise.all([
+    pool(targets, OS === "windows" ? 64 : 128, async (ip) => {
       const r = ip === lan.ip ? null : await ping(ip, signal);
       if (++done % 16 === 0) onProgress?.(done, targets.length);
       return [ip, r] as const;
     }, signal),
-    run("avahi-browse", ["-aptr"], 10_000, signal).then((r) =>
-      parseAvahi(r.out)
-    ),
-    ssdp(lan.ip),
     loadOui(),
   ]);
-  const neigh = parseNeigh(
-    (await run("ip", ["-j", "neigh"], 2000)).out || "[]",
+  const neigh = await neighbours();
+  const size = 2 ** (32 - lan.cidr);
+  const broadcast = intToIp(
+    Math.floor(ipToInt(lan.ip) / size) * size + size - 1,
   );
+  const lanOnly = (ips: Iterable<string>) =>
+    [...ips].filter((ip) => inSubnet(ip, lan.ip, lan.cidr) && ip !== broadcast);
+  // Second step: ask the hosts we now know about for names and services.
+  const seen = lanOnly([
+    ...pings.filter((p) => p?.[1]).map((p) => p[0]),
+    ...neigh.keys(),
+  ]).filter((ip) => ip !== lan.ip);
+  if (signal?.aborted) return [];
+  const [mdnsMap, upnp] = await Promise.all([mdns(seen), ssdp(seen)]);
   const now = Date.now();
   const alive = new Set([
     lan.ip,
-    ...pings.filter((p) => p?.[1]).map((p) => p[0]),
-    ...[...neigh.keys(), ...mdns.keys(), ...upnp.keys()].filter((ip) =>
-      inSubnet(ip, lan.ip, lan.cidr)
-    ),
+    ...seen,
+    ...lanOnly([...mdnsMap.keys(), ...upnp.keys()]),
   ]);
   const replies = new Map(pings.filter(Boolean));
   const myOs = await selfOs();
@@ -301,7 +540,7 @@ export const discover = async (
   return [...alive].map((ip) => {
     const mac = ip === lan.ip ? lan.mac : neigh.get(ip) ?? "";
     const p = replies.get(ip);
-    const m = mdns.get(ip);
+    const m = mdnsMap.get(ip);
     return {
       ...blank(ip, now),
       mac,
@@ -321,8 +560,15 @@ export const discover = async (
 
 /** This machine's OS, read directly — no guessing needed. */
 const selfOs = async (): Promise<string> =>
-  /^PRETTY_NAME="?([^"\n]+)/m.exec(await read("/etc/os-release"))?.[1] ??
-    Deno.build.os;
+  osName(
+    OS,
+    Deno.osRelease(),
+    OS === "darwin"
+      ? (await run("sw_vers", ["-productVersion"], 2000)).out
+      : OS === "linux"
+      ? await read("/etc/os-release")
+      : "",
+  );
 
 // ── per-device probes ────────────────────────────────────────────────────
 
@@ -409,11 +655,17 @@ export const scanPorts = async (
   }));
 };
 
-export const netbios = async (ip: string) =>
-  parseNmb((await run("nmblookup", ["-A", ip], 3000)).out);
+/** NetBIOS node status (UDP 137): Windows and Samba hosts say their name. */
+export const netbios = (ip: string): Promise<string> => {
+  let name = "";
+  return udp(1500, (send) => {
+    send(nbstatQuery(Math.floor(Math.random() * 65535)), 137, ip);
+  }, (b, from) => {
+    if (from === ip && !name) name = nbstatName(b);
+  }, () => name);
+};
 
-export const reverseName = async (ip: string): Promise<string> =>
-  (await run("getent", ["hosts", ip], 2500)).out.trim().split(/\s+/)[1] ?? "";
+export const reverseName = (ip: string): Promise<string> => ptr(ip);
 
 export { identify };
 
