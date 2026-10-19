@@ -1,12 +1,13 @@
 // About: what the app does, how, and what leaves this machine.
 import type { JSX } from "aio";
+import { net } from "../cell.ts";
 
 export function About(): JSX.Element {
   return (
     <section class="pane about">
       <header class="pane-head">
         <h2>ℹ️ About NetMap</h2>
-        <span class="muted">v0.1</span>
+        <span class="muted">{net.appVersion ? `v${net.appVersion}` : ""}</span>
       </header>
       <div class="scroll prose">
         <p>

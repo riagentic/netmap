@@ -4,7 +4,7 @@
 // path via mtr / traceroute / tracert. Each OS uses only what it ships with.
 import dgram from "node:dgram";
 import { join } from "@std/path";
-import { appDirs } from "aio/server";
+import { appDirs, appVersion } from "aio/server";
 import {
   header,
   hostsOf,
@@ -669,6 +669,9 @@ export const netbios = (ip: string): Promise<string> => {
 export const reverseName = (ip: string): Promise<string> => ptr(ip);
 
 export { identify };
+
+/** This build's version, as the build and `--version` report it. */
+export const version = (): Promise<string> => appVersion();
 
 /** NETMAP_DEMO=1: scan the made-up network in demo.server.ts instead. */
 export const demo = () => Deno.env.get("NETMAP_DEMO") === "1";

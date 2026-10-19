@@ -25,6 +25,7 @@ const port = (n: number, banner = ""): Port => ({
 /** Offline stand-in for scan.server.ts: same exports the cell uses, canned answers. */
 const fakeIo = (found: Device[]) => ({
   demo: () => false,
+  version: () => Promise.resolve("0.1.7"),
   local: () => Promise.resolve(local),
   trace: () =>
     Promise.resolve([{
@@ -152,4 +153,12 @@ Deno.test("demo mode: a made-up network, fully identified", async () => {
     ) => !kinds.has(k as Device["kind"])),
     [],
   );
+});
+
+Deno.test("loadVersion: the running build's version, never persisted", async () => {
+  await using _h = await bootCells([net], {
+    stub: { "./scan.server.ts": fakeIo([]) },
+  });
+  await net.loadVersion();
+  assertEquals(net.appVersion, "0.1.7");
 });
