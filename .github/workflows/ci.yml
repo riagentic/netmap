@@ -49,8 +49,16 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the build number is the commit count: needs full history
       - uses: ./.github/actions/setup
       - run: deno task build --targets=electron --platforms=${{ matrix.platforms }}
+      - name: artifacts carry the tag's version
+        shell: bash
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          ls dist
+          ls dist | grep -q -- "-$v-" || { echo "::error::built version is not $v"; exit 1; }
       - uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.os }}
