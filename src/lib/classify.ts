@@ -181,11 +181,17 @@ const match = (rules: Rule[], text: string, src: string): Vote[] =>
     }))
     : [];
 
+/** Icon hints Samba/avahi publish as `model=`: not a real model. */
+const FAKE_MODEL = /^(MacSamba|Xserve|RackMac)$/i;
+
 const txtVal = (d: Device, keys: string[]): string => {
   for (const s of d.mdns) {
     for (const t of s.txt) {
       const [k, ...v] = t.split("=");
-      if (keys.includes(k.toLowerCase()) && v.join("=")) return v.join("=");
+      const val = v.join("=");
+      if (keys.includes(k.toLowerCase()) && val && !FAKE_MODEL.test(val)) {
+        return val;
+      }
     }
   }
   return "";

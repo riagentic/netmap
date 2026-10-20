@@ -1,0 +1,30 @@
+name: setup
+description: Deno + aio (am) + the pinned framework link, on any runner OS.
+runs:
+  using: composite
+  steps:
+    - uses: denoland/setup-deno@v2
+      with:
+        deno-version: "2.9.7"
+    - uses: actions/cache@v4
+      with:
+        path: .deno-cache
+        key: deno-${{ runner.os }}-${{ hashFiles('deno.lock') }}
+    - if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        curl -fsSL https://raw.githubusercontent.com/riagentic/aio/main/install.sh | sh
+        echo "$HOME/.deno/bin" >> "$GITHUB_PATH"
+    - if: runner.os == 'Windows'
+      shell: pwsh
+      # Run as a file: Actions dot-sources step scripts, and `irm | iex` inside a
+      # dot-sourced script makes install.ps1 load its functions without installing.
+      run: |
+        $env:AIO_NO_PATH_WRITE = "1"
+        $f = Join-Path $env:RUNNER_TEMP "install-aio.ps1"
+        Invoke-RestMethod https://raw.githubusercontent.com/riagentic/aio/main/install.ps1 -OutFile $f
+        & $f
+        "$env:USERPROFILE\.deno\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+    # pwsh on every runner: Git Bash cannot start Windows' am.cmd.
+    - shell: pwsh
+      run: am fix

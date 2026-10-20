@@ -19,6 +19,8 @@ export type NetState = {
   startedAt: number;
   finishedAt: number;
   error: string;
+  /** This build, `major.minor.build` — read from the server at start. */
+  appVersion: string;
 };
 
 type S = NetState & MethodDraftMeta;
@@ -68,8 +70,8 @@ const isHost = (v: unknown) =>
   "IPv4 address or host name required";
 
 export const net = cell("net", {
-  version: 1,
-  onMigrate: (s) => s,
+  version: 2,
+  onMigrate: (s) => ({ ...s, appVersion: s.appVersion ?? "" }),
   state: {
     phase: "idle",
     progress: { done: 0, total: 0 },
@@ -81,9 +83,10 @@ export const net = cell("net", {
     startedAt: 0,
     finishedAt: 0,
     error: "",
+    appVersion: "",
   } as NetState,
   // A restart kills any scan in flight; never restore a "running" look.
-  persist: { exclude: ["phase", "progress", "deep"] },
+  persist: { exclude: ["phase", "progress", "deep", "appVersion"] },
   args: {
     deepScan: [
       (v) => (typeof v === "string" && IPV4.test(v)) || "IPv4 address required",
@@ -211,6 +214,12 @@ export const net = cell("net", {
 
     setTarget(s: NetState, target: string) {
       s.target = target.trim();
+    },
+
+    /** Called at start: the version this running build reports. */
+    async loadVersion(s: S) {
+      const io = await serverImport<IO>("./scan.server.ts", import.meta.url);
+      s.appVersion = await io.version();
     },
 
     forgetOffline(s: NetState) {

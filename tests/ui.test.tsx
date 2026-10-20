@@ -7,6 +7,7 @@ import { dev } from "./fixtures.ts";
 const seed = {
   net: {
     phase: "done",
+    appVersion: "0.1.7",
     local: {
       hostname: "host1",
       ifaces: [{ name: "wg0", ip: "10.8.0.2", cidr: 16, mac: "" }],
@@ -137,4 +138,5 @@ testUI(App, "map node and internet node select; zoom buttons; about tab", {
   await ui.waitFor(() => page().includes("100%"));
   ui.AboutTab.click();
   await ui.waitFor(() => page().includes("How devices are found"));
+  assert(page().includes("About NetMapv0.1.7"), "About shows the version");
 });

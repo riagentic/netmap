@@ -8,8 +8,9 @@ await aio.run({
   ui: { theme: "auto", title: "NetMap", width: 1440, height: 940 },
   electron: { ignoreDebugEnv: true, strictPin: true },
   wire: { refuseShortCalls: true },
-  // First launch: nothing known yet — start scanning right away.
   onStart: () => {
+    void net.loadVersion();
+    // First launch: nothing known yet — start scanning right away.
     if (net.devices.length === 0) void net.scan();
   },
 });

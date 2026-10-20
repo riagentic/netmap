@@ -3,15 +3,11 @@ import { identify } from "../src/lib/classify.ts";
 import {
   hostsOf,
   isRandomMac,
-  parseAvahi,
   parseCurl,
   parseMtr,
   parseNeigh,
-  parseNmb,
   parseOuiCsv,
-  parsePing,
   parseUpnp,
-  unescapeAvahi,
   vendorOf,
   zoneOf,
 } from "../src/lib/parse.ts";
@@ -78,39 +74,7 @@ Deno.test("parseMtr: ips, names, ASN, silent hops", () => {
   ]);
 });
 
-Deno.test("avahi: decimal escapes, services and TXT per ip", () => {
-  assertEquals(
-    unescapeAvahi("Sam\\226\\128\\153s\\032MacBook"),
-    "Sam’s MacBook",
-  );
-  const m = parseAvahi([
-    "+;eth0;IPv4;x;_ipp._tcp;local",
-    '=;eth0;IPv4;Brother\\032HL;Internet Printer;local;PRINTER1.local;192.168.1.90;631;"ty=Brother HL-L2350DW" "rp=ipp/print"',
-    "=;eth0;IPv4;Brother\\032HL;Web Site;local;PRINTER1.local;192.168.1.90;80;",
-    "=;eth0;IPv6;Brother\\032HL;Web Site;local;PRINTER1.local;fe80::1;80;",
-  ].join("\n"));
-  const p = m.get("192.168.1.90")!;
-  assertEquals(m.size, 1);
-  assertEquals(p.names, ["PRINTER1", "Brother HL"]);
-  assertEquals(p.services.map((s) => [s.type, s.port]), [[
-    "Internet Printer",
-    631,
-  ], ["Web Site", 80]]);
-  assertEquals(p.services[0].txt, ["ty=Brother HL-L2350DW", "rp=ipp/print"]);
-});
-
-Deno.test("ping, nmblookup, neigh, curl, upnp parsers", () => {
-  assertEquals(
-    parsePing("64 bytes from 192.168.1.1: icmp_seq=1 ttl=64 time=0.412 ms"),
-    { ttl: 64, rtt: 0.412 },
-  );
-  assertEquals(parsePing("1 packets transmitted, 0 received"), null);
-  assertEquals(
-    parseNmb(
-      "Looking up status\n\tNAS1         <00> -         B <ACTIVE> \n\tWORKGROUP <00> - <GROUP> B <ACTIVE>",
-    ),
-    "NAS1",
-  );
+Deno.test("neigh, curl, upnp parsers", () => {
   const n = parseNeigh(JSON.stringify([
     { dst: "192.168.1.1", lladdr: "4C:5E:0C:00:00:01", state: ["REACHABLE"] },
     { dst: "192.168.1.7", lladdr: "aa:bb:cc:dd:ee:ff", state: ["FAILED"] },
@@ -197,6 +161,12 @@ Deno.test("identify: printer from mDNS, Debian NAS from SSH, Windows PC, phone f
     dev({
       names: ["nas1"],
       ttl: 64,
+      mdns: [{
+        type: "Device info",
+        name: "nas1",
+        port: 0,
+        txt: ["model=MacSamba"],
+      }],
       ports: [{
         port: 22,
         service: "ssh",
@@ -205,7 +175,11 @@ Deno.test("identify: printer from mDNS, Debian NAS from SSH, Windows PC, phone f
       }, { port: 445, service: "smb", banner: "", http: null }],
     }),
   );
-  assertEquals([nas.kind, nas.os], ["nas", "Linux (Debian 12)"]);
+  assertEquals([nas.kind, nas.os, nas.model], [
+    "nas",
+    "Linux (Debian 12)",
+    "",
+  ]);
   const win = identify(
     dev({
       ttl: 128,

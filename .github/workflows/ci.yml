@@ -1,0 +1,84 @@
+name: ci
+
+# check: gates on Linux. live: the real probes on Linux, macOS and Windows.
+# On a v* tag: build every platform and publish a GitHub Release.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  DENO_DIR: ${{ github.workspace }}/.deno-cache
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: deno task fmt --check
+      - run: deno task lint
+      - run: deno task check
+      - run: deno task test
+
+  live:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: deno test -A tests/live.test.ts
+        env:
+          NETMAP_LIVE: "1"
+
+  build:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [check, live]
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platforms: linux,windows
+          - os: macos-latest
+            platforms: macos,macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the build number is the commit count: needs full history
+      - uses: ./.github/actions/setup
+      - run: deno task build --targets=electron --platforms=${{ matrix.platforms }}
+      - name: artifacts carry the tag's version
+        shell: bash
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          ls dist
+          ls dist | grep -q -- "-$v-" || { echo "::error::built version is not $v"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.os }}
+          path: |
+            dist/*.AppImage
+            dist/*.exe
+            dist/*.dmg
+            dist/*mac*.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: ls -la dist
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "NetMap $GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

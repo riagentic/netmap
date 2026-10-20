@@ -14,26 +14,30 @@ No root needed. Results stay on your machine.
 
 ## Requirements
 
-Linux, with `ping`, `ip`, `curl` and `mtr`. Optional, for more device names:
-`dig`, `avahi-browse`, `nmblookup`.
+Linux, macOS or Windows 10/11. Everything it needs ships with the OS. On Linux,
+`mtr` or `traceroute` is needed for the path (`sudo apt install mtr-tiny`).
+
+## Install
+
+Download from [Releases](https://github.com/riagentic/netmap/releases/latest):
+
+- 🐧 **Linux**: `netmap-*.AppImage`, then
+  `chmod +x netmap-*.AppImage && ./netmap-*.AppImage`
+- 🪟 **Windows**: `netmap-*-win-x64.exe`. It is unsigned, so SmartScreen asks
+  first: _More info → Run anyway_. If the firewall asks, _Cancel_ is fine.
+- 🍎 **macOS**: `netmap-*.dmg` (Apple Silicon or Intel). It is unsigned, so the
+  first time: right-click the app → _Open_.
+
+Or build and run from source in one command:
 
 ```sh
-sudo apt install iputils-ping iproute2 curl mtr-tiny dnsutils avahi-utils samba-common-bin
-```
-
-## Run
-
-One command: clones, installs what is missing, builds, installs to the app menu,
-starts it:
-
-```sh
+# Linux, macOS
 curl -fsSL https://raw.githubusercontent.com/riagentic/aio/main/run.sh | sh -s riagentic/netmap
 ```
 
-Or download the AppImage from Releases, then:
-
-```sh
-chmod +x netmap-*.AppImage && ./netmap-*.AppImage
+```powershell
+# Windows (PowerShell)
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/riagentic/aio/main/run.ps1))) -Git riagentic/netmap
 ```
 
 ## Develop
@@ -44,15 +48,17 @@ Built with [aio](https://github.com/riagentic/aio). Install `am`, then:
 am fix              # link the framework, install deps
 deno task dev       # run
 deno task test      # test
-deno task compile   # build the AppImage into dist/
+deno task compile   # build for this OS into dist/
+deno task build --targets=electron --platforms=linux,windows,macos-arm64
 ```
 
 Demo mode scans a made-up network (no probes): `NETMAP_DEMO=1 deno task dev`.
 
 ## Privacy
 
-The scan runs locally. Only two outside requests: `ipinfo.io` (your public IP
-and provider) and `standards-oui.ieee.org` (vendor list, once a month).
+The scan runs locally. Outside requests: `ipinfo.io` (your public IP and
+provider), `standards-oui.ieee.org` (vendor list, once a month), and DNS lookups
+for hop names and networks (`asn.cymru.com`).
 
 ## License
 
