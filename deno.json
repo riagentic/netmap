@@ -12,7 +12,8 @@
       "host"
     ],
     "out": "dist",
-    "strictPin": true
+    "strictPin": true,
+    "electronRuntime": "online"
   },
   "android": {
     "colorScheme": "system"

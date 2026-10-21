@@ -19,7 +19,8 @@ Linux, macOS or Windows 10/11. Everything it needs ships with the OS. On Linux,
 
 ## Install
 
-Download from [Releases](https://github.com/riagentic/netmap/releases/latest):
+Download from [Releases](https://github.com/riagentic/netmap/releases/latest)
+(~30 MB; the first start downloads its Electron runtime once):
 
 - 🐧 **Linux**: `netmap-*.AppImage`, then
   `chmod +x netmap-*.AppImage && ./netmap-*.AppImage`
